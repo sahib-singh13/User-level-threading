@@ -5,33 +5,40 @@ BINDIR := bin
 SRCDIR := src
 EXAMPLE_DIR := example
 
-# Output binary name
-DEMO_BIN := $(BINDIR)/phase1_demo
-
-# Source files
+# Sources
 LIB_SRC := $(SRCDIR)/uthread.cpp
-DEMO_SRC := $(EXAMPLE_DIR)/phase1_demo.cpp
-TIMER_DEMO_SRC := example/timer_demo.cpp
-TIMER_DEMO_BIN := bin/timer_demo
-PHASE2_DEMO_SRC := example/phase2_demo.cpp
-PHASE2_DEMO_BIN := bin/phase2_demo
 
-.PHONY: all clean
+# Demos
+PHASE1_SRC := $(EXAMPLE_DIR)/phase1_demo.cpp
+PHASE1_BIN := $(BINDIR)/phase1_demo
 
-all: $(DEMO_BIN) $(PHASE2_DEMO_BIN)
+PHASE2_SRC := $(EXAMPLE_DIR)/phase2_demo.cpp
+PHASE2_BIN := $(BINDIR)/phase2_demo
+
+MUTEX_SRC := $(EXAMPLE_DIR)/mutex_demo.cpp
+MUTEX_BIN := $(BINDIR)/mutex_demo
+
+.PHONY: all clean phase1 phase2 mutex
+
+# Build all demos
+all: phase1 phase2 mutex
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
 
-$(DEMO_BIN): $(DEMO_SRC) $(LIB_SRC) | $(BINDIR)
-	$(CXX) $(CXXFLAGS) -o $@ $^ 
+# Individual Targets
+phase1: $(PHASE1_BIN)
+phase2: $(PHASE2_BIN)
+mutex: $(MUTEX_BIN)
 
-timer_demo: $(TIMER_DEMO_SRC) | $(BINDIR)
-	$(CXX) $(CXXFLAGS) -o $(TIMER_DEMO_BIN) $(TIMER_DEMO_SRC)
-	
-# Compile phase 2 demo
-$(PHASE2_DEMO_BIN): $(PHASE2_DEMO_SRC) $(LIB_SRC) | $(BINDIR)
+$(PHASE1_BIN): $(PHASE1_SRC) $(LIB_SRC) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^
-	
+
+$(PHASE2_BIN): $(PHASE2_SRC) $(LIB_SRC) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+$(MUTEX_BIN): $(MUTEX_SRC) $(LIB_SRC) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
 clean:
 	rm -rf $(BINDIR) *.o
