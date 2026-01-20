@@ -13,10 +13,12 @@ LIB_SRC := $(SRCDIR)/uthread.cpp
 DEMO_SRC := $(EXAMPLE_DIR)/phase1_demo.cpp
 TIMER_DEMO_SRC := example/timer_demo.cpp
 TIMER_DEMO_BIN := bin/timer_demo
+PHASE2_DEMO_SRC := example/phase2_demo.cpp
+PHASE2_DEMO_BIN := bin/phase2_demo
 
 .PHONY: all clean
 
-all: $(DEMO_BIN)
+all: $(DEMO_BIN) $(PHASE2_DEMO_BIN)
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
@@ -26,6 +28,10 @@ $(DEMO_BIN): $(DEMO_SRC) $(LIB_SRC) | $(BINDIR)
 
 timer_demo: $(TIMER_DEMO_SRC) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $(TIMER_DEMO_BIN) $(TIMER_DEMO_SRC)
+	
+# Compile phase 2 demo
+$(PHASE2_DEMO_BIN): $(PHASE2_DEMO_SRC) $(LIB_SRC) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
 	
 clean:
 	rm -rf $(BINDIR) *.o
