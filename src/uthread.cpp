@@ -7,13 +7,18 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
-#include <vector>
+#include <unordered_map>
 #include <cassert>
 #include <algorithm>
 #include <random>
+#include <cstring>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/epoll.h>
 
 // Configuration
 const int STACK_SIZE = 64 * 1024;
+const int MAX_EVENTS = 64; // Max IO events to process per tick
 
 enum class ThreadState { READY, RUNNING, BLOCKED, FINISHED };
 
@@ -23,25 +28,18 @@ struct TCB {
     std::vector<char> stack;
     ThreadState state;
     void (*func)();
-    int priority; // Kept for future use, simpler logic for now
-
-    TCB(int tid, void (*f)(), int prio) 
-        : id(tid), state(ThreadState::READY), func(f), priority(prio) {
+    
+    TCB(int tid, void (*f)()) : id(tid), state(ThreadState::READY), func(f) {
         stack.resize(STACK_SIZE);
     }
 };
 
-// ---------------------------------------------------------
-// Worker Structure (Per-Core Data)
-// ---------------------------------------------------------
 struct Worker {
     int id;
     std::thread thread_obj; 
     std::deque<std::shared_ptr<TCB>> ready_queue;
     std::mutex queue_lock;
     std::shared_ptr<TCB> current_thread;
-    
-    // We need a separate context for the scheduler loop itself
     ucontext_t sched_context; 
 
     Worker(int worker_id) : id(worker_id) {}
@@ -51,19 +49,59 @@ struct Worker {
 static std::vector<std::unique_ptr<Worker>> workers;
 static std::atomic<int> next_tid{0};
 static std::atomic<bool> system_running{true};
-
-// Thread Local Pointer: "Who am I?"
 static thread_local Worker* my_worker = nullptr;
+
+// ---------------------------------------------------------
+// NEW: IO Poller (Global)
+// ---------------------------------------------------------
+static int global_epoll_fd = -1;
+static std::mutex poll_lock;
+static std::unordered_map<int, std::shared_ptr<TCB>> fd_to_thread;
+
+static void init_poller() {
+    global_epoll_fd = epoll_create1(0);
+    if (global_epoll_fd == -1) {
+        perror("epoll_create1");
+        exit(1);
+    }
+}
 
 // ---------------------------------------------------------
 // Scheduler Logic
 // ---------------------------------------------------------
 
+static void check_io_events() {
+    if (poll_lock.try_lock()) {
+        struct epoll_event events[MAX_EVENTS];
+        int n = epoll_wait(global_epoll_fd, events, MAX_EVENTS, 0);
+        
+        for (int i = 0; i < n; ++i) {
+            int fd = events[i].data.fd;
+            auto it = fd_to_thread.find(fd);
+            if (it != fd_to_thread.end()) {
+                auto tcb = it->second;
+                fd_to_thread.erase(it); // Remove from waiting map
+                
+                epoll_ctl(global_epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+
+                tcb->state = ThreadState::READY;
+                {
+                    std::lock_guard<std::mutex> qlock(my_worker->queue_lock);
+                    my_worker->ready_queue.push_back(tcb);
+                }
+            }
+        }
+        poll_lock.unlock();
+    }
+}
+
 static void schedule() {
     while (system_running) {
         std::shared_ptr<TCB> next_task = nullptr;
 
-        // 1. Try local queue
+        check_io_events();
+
+        // Try local queue
         {
             std::lock_guard<std::mutex> lock(my_worker->queue_lock);
             if (!my_worker->ready_queue.empty()) {
@@ -72,18 +110,15 @@ static void schedule() {
             }
         }
 
-        // 2. Work Stealing (if local empty)
+        // Work Stealing
         if (!next_task && workers.size() > 1) {
-            // Pick random victim
             int victim_id = rand() % workers.size();
             if (victim_id != my_worker->id) {
                 Worker* victim = workers[victim_id].get();
                 if (victim->queue_lock.try_lock()) {
                     if (!victim->ready_queue.empty()) {
-                        // Steal from back!
                         next_task = victim->ready_queue.back();
                         victim->ready_queue.pop_back();
-                        // std::cout << "[Worker " << my_worker->id << "] Stole task " << next_task->id << " from Worker " << victim->id << "\n";
                     }
                     victim->queue_lock.unlock();
                 }
@@ -91,113 +126,108 @@ static void schedule() {
         }
 
         if (next_task) {
-            // Context Switch to Task
             my_worker->current_thread = next_task;
             next_task->state = ThreadState::RUNNING;
-            
-            // We swap from the "Scheduler Context" to the "Task Context"
             swapcontext(&my_worker->sched_context, &next_task->context);
-            
-            // ... We return here when the task yields or finishes ...
             my_worker->current_thread = nullptr;
         } else {
-            // No work found? Sleep briefly to save CPU
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
     }
 }
 
-// Trampoline for User Threads
 static void thread_start_wrapper() {
     if (my_worker->current_thread && my_worker->current_thread->func) {
         my_worker->current_thread->func();
     }
-    
-    // Task Finished
     my_worker->current_thread->state = ThreadState::FINISHED;
-    // Swap back to scheduler
     setcontext(&my_worker->sched_context);
 }
 
-// Trampoline for Worker Threads (OS threads)
 static void worker_entry_point(int worker_id) {
     my_worker = workers[worker_id].get();
-    // std::cout << "[System] Worker " << worker_id << " online.\n";
-    
-    schedule(); // Enter loop
+    schedule();
 }
 
 // ---------------------------------------------------------
-// Public API
+// Public API Implementation
 // ---------------------------------------------------------
 
 namespace uthread {
     void init(int num_cores) {
-        if (num_cores <= 0) num_cores = 4; // Default to 4 workers
+        if (num_cores <= 0) num_cores = 4;
+        init_poller();
 
-        // Create Worker 0 (for the main thread)
         workers.push_back(std::make_unique<Worker>(0));
-        my_worker = workers[0].get(); // Main thread claims Worker 0
+        my_worker = workers[0].get();
 
-        // Create other workers
         for (int i = 1; i < num_cores; ++i) {
             workers.push_back(std::make_unique<Worker>(i));
-            // Launch std::thread
             workers[i]->thread_obj = std::thread(worker_entry_point, i);
         }
     }
 
     void create(void (*func)(), int priority) {
-        auto tcb = std::make_shared<TCB>(next_tid++, func, priority);
-        
-        // Init Context
+        (void)priority;
+        auto tcb = std::make_shared<TCB>(next_tid++, func);
         getcontext(&tcb->context);
         tcb->context.uc_stack.ss_sp = tcb->stack.data();
         tcb->context.uc_stack.ss_size = STACK_SIZE;
         tcb->context.uc_link = nullptr;
         makecontext(&tcb->context, thread_start_wrapper, 0);
 
-        // Push to LOCAL queue
-        {
-            std::lock_guard<std::mutex> lock(my_worker->queue_lock);
-            my_worker->ready_queue.push_back(tcb);
-        }
+        std::lock_guard<std::mutex> lock(my_worker->queue_lock);
+        my_worker->ready_queue.push_back(tcb);
     }
 
     void yield() {
         auto tcb = my_worker->current_thread;
-        
-        // Push current task back to queue
         {
             std::lock_guard<std::mutex> lock(my_worker->queue_lock);
             tcb->state = ThreadState::READY;
             my_worker->ready_queue.push_back(tcb);
         }
-
-        // Return to scheduler
-        // Note: We use swapcontext to save current state and jump to scheduler
         swapcontext(&tcb->context, &my_worker->sched_context);
     }
     
-    // Simple helper to join all threads (spin until empty)
-    // In a real system we'd use condition variables
     void run_scheduler_loop() {
         schedule();
     }
     
     void exit() {
-        // Just switch back to scheduler; don't push to queue
         setcontext(&my_worker->sched_context);
     }
-    
-    // Stub Mutex (Simplified for Phase 4 demo)
-    // Since we changed the backend, the old Mutex needs updates for multi-core safety.
-    // For this specific phase demo, we will rely on atomic/implicit logic or ignore Mutex for a moment.
-   void Mutex::lock() { 
-    // No-op for now
-}
 
-void Mutex::unlock() { 
-    // No-op for now
-}
+    // Mutex stubs
+    void Mutex::lock() {}
+    void Mutex::unlock() {}
+
+    // Async IO Implementation
+    int socket_read(int fd, char* buf, size_t len) {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (!(flags & O_NONBLOCK)) {
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        }
+
+        while (true) {
+            ssize_t n = read(fd, buf, len);
+
+            if (n >= 0) return n; 
+            if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+
+            // Block and wait for Epoll
+            {
+                std::lock_guard<std::mutex> lock(poll_lock);
+                fd_to_thread[fd] = my_worker->current_thread;
+                
+                struct epoll_event ev;
+                ev.events = EPOLLIN | EPOLLONESHOT;
+                ev.data.fd = fd;
+                epoll_ctl(global_epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+            }
+
+            my_worker->current_thread->state = ThreadState::BLOCKED;
+            swapcontext(&my_worker->current_thread->context, &my_worker->sched_context);
+        }
+    }
 }

@@ -10,6 +10,7 @@ namespace uthread {
     void init(int num_cores = 0); // New arg
     void create(void (*func)(), int priority = 0);
     void yield();
+    int socket_read(int fd, char* buf, size_t len);
     void exit();
     void run_scheduler_loop(); // New: Main thread becomes a worker too
 

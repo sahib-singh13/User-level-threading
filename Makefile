@@ -24,13 +24,16 @@ PRIORITY_BIN := $(BINDIR)/priority_demo
 MULTICORE_SRC := $(EXAMPLE_DIR)/multicore_demo.cpp
 MULTICORE_BIN := $(BINDIR)/multicore_demo
 
+NET_SRC := $(EXAMPLE_DIR)/net_demo.cpp
+NET_BIN := $(BINDIR)/net_demo
+
 # Need -pthread for std::thread
 CXXFLAGS += -pthread
 
 .PHONY: all clean phase1 phase2 mutex
 
 # Build all demos
-all:phase1 phase2 mutex priority multicore
+all: phase1 phase2 mutex priority multicore net
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
@@ -40,6 +43,7 @@ phase1: $(PHASE1_BIN)
 phase2: $(PHASE2_BIN)
 mutex: $(MUTEX_BIN)
 multicore: $(MULTICORE_BIN)
+net: $(NET_BIN)
 
 $(PHASE1_BIN): $(PHASE1_SRC) $(LIB_SRC) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^
@@ -57,6 +61,8 @@ $(PRIORITY_BIN): $(PRIORITY_SRC) $(LIB_SRC) | $(BINDIR)
 
 $(MULTICORE_BIN): $(MULTICORE_SRC) $(LIB_SRC) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^
-	
+
+$(NET_BIN): $(NET_SRC) $(LIB_SRC) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
 clean:
 	rm -rf $(BINDIR) *.o
