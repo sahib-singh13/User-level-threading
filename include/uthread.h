@@ -7,10 +7,11 @@
 struct TCB; // Forward declaration
 
 namespace uthread {
-    void init();
+    void init(int num_cores = 0); // New arg
     void create(void (*func)(), int priority = 0);
     void yield();
     void exit();
+    void run_scheduler_loop(); // New: Main thread becomes a worker too
 
     class Mutex {
     private:
