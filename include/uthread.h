@@ -8,7 +8,7 @@ struct TCB; // Forward declaration
 
 namespace uthread {
     void init();
-    void create(void (*func)());
+    void create(void (*func)(), int priority = 0);
     void yield();
     void exit();
 

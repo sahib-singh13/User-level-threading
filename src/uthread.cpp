@@ -8,12 +8,12 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <unistd.h>
+#include <algorithm> // Needed for std::max_element
 
 // Configuration
 const int STACK_SIZE = 64 * 1024;
-const int TIME_QUANTUM_USEC = 10000; // 10ms
+const int TIME_QUANTUM_USEC = 10000;
 
-// Thread States
 enum class ThreadState { READY, RUNNING, BLOCKED, FINISHED };
 
 struct TCB {
@@ -22,22 +22,20 @@ struct TCB {
     std::vector<char> stack;
     ThreadState state;
     void (*func)();
+    int priority; // NEW: Priority level
 
-    TCB(int tid, void (*f)()) : id(tid), state(ThreadState::READY), func(f) {
+    TCB(int tid, void (*f)(), int prio) 
+        : id(tid), state(ThreadState::READY), func(f), priority(prio) {
         stack.resize(STACK_SIZE);
     }
 };
 
-// Global Scheduler State
 static std::deque<std::shared_ptr<TCB>> ready_queue;
 static std::shared_ptr<TCB> current_thread = nullptr;
 static std::shared_ptr<TCB> main_thread = nullptr;
 static int next_tid = 0;
 
-// ---------------------------------------------------------
-// Signal Safety (The "Kernel Lock")
-// ---------------------------------------------------------
-
+// Signal Safety Helpers
 static void block_signals() {
     sigset_t mask;
     sigemptyset(&mask);
@@ -50,34 +48,6 @@ static void unblock_signals() {
     sigemptyset(&mask);
     sigaddset(&mask, SIGVTALRM);
     sigprocmask(SIG_UNBLOCK, &mask, nullptr);
-}
-
-// ---------------------------------------------------------
-// Scheduler Core
-// ---------------------------------------------------------
-
-static void schedule() {
-    // Note: Signals must be BLOCKED when entering here
-    if (ready_queue.empty()) {
-        // If current is running, keep running. If blocked/finished, switch to main.
-        if (current_thread->state == ThreadState::RUNNING) {
-            return; 
-        }
-        // Switch to main if we have nothing else
-        if (current_thread != main_thread) {
-            swapcontext(&current_thread->context, &main_thread->context);
-        }
-        return; 
-    }
-
-    auto next = ready_queue.front();
-    ready_queue.pop_front();
-
-    auto prev = current_thread;
-    current_thread = next;
-    current_thread->state = ThreadState::RUNNING;
-
-    swapcontext(&prev->context, &current_thread->context);
 }
 
 // Timer Handler
@@ -101,8 +71,39 @@ static void setup_timer() {
     setitimer(ITIMER_VIRTUAL, &timer, nullptr);
 }
 
+// ---------------------------------------------------------
+// NEW: Priority Scheduler Logic
+// ---------------------------------------------------------
+
+static void schedule() {
+    // Assumes signals BLOCKED
+    if (ready_queue.empty()) {
+        if (current_thread != main_thread && current_thread->state != ThreadState::RUNNING) {
+            swapcontext(&current_thread->context, &main_thread->context);
+        }
+        return; 
+    }
+
+    // NEW: Find the thread with the HIGHEST priority
+    // We use a lambda to compare priorities.
+    auto it = std::max_element(ready_queue.begin(), ready_queue.end(), 
+        [](const std::shared_ptr<TCB>& a, const std::shared_ptr<TCB>& b) {
+            return a->priority < b->priority;
+        });
+
+    // 'it' is an iterator to the best thread. Copy it, then erase from queue.
+    auto next = *it;
+    ready_queue.erase(it);
+
+    auto prev = current_thread;
+    current_thread = next;
+    current_thread->state = ThreadState::RUNNING;
+
+    swapcontext(&prev->context, &current_thread->context);
+}
+
 static void thread_start_wrapper() {
-    unblock_signals(); // Allow preemption inside the user function
+    unblock_signals();
     if (current_thread && current_thread->func) {
         current_thread->func();
     }
@@ -111,20 +112,17 @@ static void thread_start_wrapper() {
     schedule();
 }
 
-// ---------------------------------------------------------
-// Public API
-// ---------------------------------------------------------
-
 namespace uthread {
     void init() {
-        main_thread = std::make_shared<TCB>(next_tid++, nullptr);
+        main_thread = std::make_shared<TCB>(next_tid++, nullptr, 0);
         main_thread->state = ThreadState::RUNNING;
         current_thread = main_thread;
         setup_timer();
     }
 
-    void create(void (*func)()) {
-        auto tcb = std::make_shared<TCB>(next_tid++, func);
+    // NEW: Added 'priority' argument
+    void create(void (*func)(), int priority) {
+        auto tcb = std::make_shared<TCB>(next_tid++, func, priority);
         getcontext(&tcb->context);
         tcb->context.uc_stack.ss_sp = tcb->stack.data();
         tcb->context.uc_stack.ss_size = STACK_SIZE;
@@ -153,37 +151,22 @@ namespace uthread {
     void exit() {
         block_signals();
         current_thread->state = ThreadState::FINISHED;
-        schedule(); // Never returns
+        schedule();
     }
 
-    // -----------------------------------------------------
-    // Mutex Implementation
-    // -----------------------------------------------------
-
+    // Mutex implementation remains the same...
     Mutex::Mutex() : locked(false), owner(nullptr) {}
 
     void Mutex::lock() {
-        block_signals(); // Critical section start
-
+        block_signals();
         if (!locked) {
-            // Case 1: Mutex is free. Take it.
             locked = true;
             owner = current_thread;
             unblock_signals();
         } else {
-            // Case 2: Mutex is taken.
-            // 1. Mark current thread as BLOCKED
             current_thread->state = ThreadState::BLOCKED;
-            
-            // 2. Add to the Mutex's private waiting queue
             waiting_queue.push_back(current_thread);
-            
-            // 3. Switch to another thread (schedule)
-            // Note: We do NOT push current_thread to ready_queue here!
             schedule();
-            
-            // When we return here, we have the lock.
-            // (Because unlock() gave it to us)
             owner = current_thread;
             unblock_signals();
         }
@@ -191,24 +174,14 @@ namespace uthread {
 
     void Mutex::unlock() {
         block_signals();
-        
-        if (waiting_queue.empty()) {
-            // Case 1: No one is waiting. Just release.
-            locked = false;
-            owner = nullptr;
-        } else {
-            // Case 2: Someone is waiting. Wake them up!
+        if (!waiting_queue.empty()) {
             auto next_owner = waiting_queue.front();
             waiting_queue.pop_front();
-            
-            // Mark them as READY and put them back in the Global Scheduler
             next_owner->state = ThreadState::READY;
             ready_queue.push_back(next_owner);
-            
-            // Note: We keep locked=true, but effectively transfer ownership 
-            // implicitly. The waking thread will set 'owner' in lock().
         }
-        
+        locked = false;
+        owner = nullptr;
         unblock_signals();
     }
 }

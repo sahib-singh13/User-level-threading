@@ -18,10 +18,13 @@ PHASE2_BIN := $(BINDIR)/phase2_demo
 MUTEX_SRC := $(EXAMPLE_DIR)/mutex_demo.cpp
 MUTEX_BIN := $(BINDIR)/mutex_demo
 
+PRIORITY_SRC := $(EXAMPLE_DIR)/priority_demo.cpp
+PRIORITY_BIN := $(BINDIR)/priority_demo
+
 .PHONY: all clean phase1 phase2 mutex
 
 # Build all demos
-all: phase1 phase2 mutex
+all:phase1 phase2 mutex priority
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
@@ -40,5 +43,10 @@ $(PHASE2_BIN): $(PHASE2_SRC) $(LIB_SRC) | $(BINDIR)
 $(MUTEX_BIN): $(MUTEX_SRC) $(LIB_SRC) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
+priority: $(PRIORITY_BIN)
+
+$(PRIORITY_BIN): $(PRIORITY_SRC) $(LIB_SRC) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+	
 clean:
 	rm -rf $(BINDIR) *.o
