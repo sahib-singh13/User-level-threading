@@ -13,6 +13,7 @@ namespace uthread {
     int socket_read(int fd, char* buf, size_t len);
     void exit();
     void run_scheduler_loop(); // New: Main thread becomes a worker too
+    void shutdown();
 
     class Mutex {
     private:

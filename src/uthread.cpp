@@ -191,7 +191,15 @@ namespace uthread {
     }
     
     void run_scheduler_loop() {
-        schedule();
+        schedule(); // The main thread helps run tasks here.
+        
+        // --- NEW: When we return here, system_running is false. ---
+        // We must wait for the other workers to finish to prevent the crash.
+        for (auto& worker : workers) {
+            if (worker->thread_obj.joinable()) {
+                worker->thread_obj.join();
+            }
+        }
     }
     
     void exit() {
@@ -230,4 +238,8 @@ namespace uthread {
             swapcontext(&my_worker->current_thread->context, &my_worker->sched_context);
         }
     }
+    
+    void shutdown() {
+      system_running=false;
+      }
 }

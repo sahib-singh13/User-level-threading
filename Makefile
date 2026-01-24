@@ -5,6 +5,12 @@ BINDIR := bin
 SRCDIR := src
 EXAMPLE_DIR := example
 
+BENCH_DIR := bench
+LATENCY_SRC := $(BENCH_DIR)/latency.cpp
+LATENCY_BIN := $(BINDIR)/latency
+THROUGHPUT_SRC := $(BENCH_DIR)/throughput.cpp
+THROUGHPUT_BIN := $(BINDIR)/throughput
+
 # Sources
 LIB_SRC := $(SRCDIR)/uthread.cpp
 
@@ -33,7 +39,7 @@ CXXFLAGS += -pthread
 .PHONY: all clean phase1 phase2 mutex
 
 # Build all demos
-all: phase1 phase2 mutex priority multicore net
+all: phase1 phase2 mutex priority multicore net latency throughput
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
@@ -44,7 +50,15 @@ phase2: $(PHASE2_BIN)
 mutex: $(MUTEX_BIN)
 multicore: $(MULTICORE_BIN)
 net: $(NET_BIN)
+latency: $(LATENCY_BIN)
+throughput: $(THROUGHPUT_BIN)
 
+$(LATENCY_BIN): $(LATENCY_SRC) $(LIB_SRC) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+$(THROUGHPUT_BIN): $(THROUGHPUT_SRC) $(LIB_SRC) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+	
 $(PHASE1_BIN): $(PHASE1_SRC) $(LIB_SRC) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
